@@ -1,0 +1,35 @@
+TARGET = glue_layer
+# Export the environment variable APPL_PATH to the path to MAP Application
+# Platform package. For example if MAP application platform is installed at
+# path /home/abc then export the following for this environment variable:
+# export APPL_PATH=/home/abc/appl_platform  
+APPL_ROOT=${APPL_PATH}
+HOME = ./
+include ${APPL_ROOT}/custom/app_map.mk
+INC_D= -I./inc -I${APPL_ROOT}/include  ${APPL_INCLUDES} \
+        -I../h \
+	-I${APPL_ROOT}/source/h \
+	-I${APPL_ROOT}/source/cspl/h -I${APPL_ROOT}/source/cspl/ports/linux/ \
+	-I${APPL_ROOT}/source/map/ext_if/user/h \
+	-I${APPL_ROOT}/source/map/ext_if/sme/h \
+	-I${APPL_ROOT}/source/map/ext_if/tcap/h \
+	-I${APPL_ROOT}/source/map/ext_if/user/h/version_1 \
+	-I${APPL_ROOT}/source/map/ext_if/user/h/version_2 \
+	-I${APPL_ROOT}/source/map/h \
+	-I${APPL_PATH}/../send/h \
+	-I${APPL_PATH}/../send/MAP_USER/h \
+    -I${APPL_PATH}/custom/include
+
+CFLAGS = -g -Wall $(INC_D)
+COMPILER1 = gcc
+conversion_interface.o conversion_interface.c:
+	$(COMPILER1) $(CFLAGS) -c -o map_glue_layer.o map_glue_layer.c
+
+all : $(TARGET)
+$(TARGET): $(commonobjfiles)
+	$(LINKER)   $(commonobjfiles)
+	rm -f *.o
+clean:
+	rm -f ./*.o
+	rm -f $(TARGET)
+

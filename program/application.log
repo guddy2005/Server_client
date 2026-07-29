@@ -1,0 +1,11 @@
+[2026-07-21 15:47:47] [INFO] Application Started
+[2026-07-21 15:47:47] [INFO] Loading Configuration
+[2026-07-21 15:47:47] [DEBUG] Database Connection Successful
+[2026-07-21 15:47:47] [WARNING] Memory Usage High
+[2026-07-21 15:47:47] [ERROR] Unable to Connect to Client
+[2026-07-21 15:47:47] [INFO] Application Shutdown
+[2026-07-21 15:50:51] [INFO] Server Started
+[2026-07-21 15:50:51] [INFO] Client Connected
+[2026-07-21 15:50:51] [DEBUG] Packet Received
+[2026-07-21 15:50:51] [WARNING] Memory Usage High
+[2026-07-21 15:50:51] [ERROR] Socket Connection Failed
