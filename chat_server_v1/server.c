@@ -100,7 +100,7 @@ void *client_handler(void *arg)
 		strcpy(reply.sender, "SERVER");
 
 		strcpy(reply.message,
-				"Username already exists. Please connect with another username.");
+           "Username already exists. Please connect with another username.");
 
 		send_packet(socket, &reply);
 

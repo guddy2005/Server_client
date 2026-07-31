@@ -1,0 +1,160 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+#define PORT 8080
+#define MAX_CLIENTS 100
+#define BUFFER_SIZE 2048
+
+int client_sockets[MAX_CLIENTS];
+pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void broadcast_message(char *message, int sender_fd) {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client_sockets[i] != 0 && client_sockets[i] != sender_fd) {
+            if (send(client_sockets[i], message, strlen(message), 0) < 0) {
+                perror("Broadcast failed");
+            }
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+void *handle_client(void *arg) {
+    int client_fd = *((int *)arg);
+    free(arg);
+    char buffer[BUFFER_SIZE];
+    int read_size;
+
+    char join_msg[] = "A new user has joined the group!\n";
+    broadcast_message(join_msg, client_fd);
+
+    while ((read_size = recv(client_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
+        buffer[read_size] = '\0';
+        broadcast_message(buffer, client_fd);
+    }
+
+    close(client_fd);
+
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client_sockets[i] == client_fd) {
+            client_sockets[i] = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+
+    char leave_msg[] = "A user has left the group.\n";
+    broadcast_message(leave_msg, client_fd);
+
+    return NULL;
+}
+
+int main() {
+    int server_fd, new_socket;
+    struct sockaddr_in server_addr;
+
+    memset(client_sockets, 0, sizeof(client_sockets));
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+
+    bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    listen(server_fd, 10);
+
+    printf("Group chat server started on port %d...\n", PORT);
+
+    while (1) {
+        new_socket = accept(server_fd, NULL, NULL);
+
+        pthread_mutex_lock(&clients_mutex);
+        int i;
+        for (i = 0; i < MAX_CLIENTS; i++) {
+            if (client_sockets[i] == 0) {
+                client_sockets[i] = new_socket;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&clients_mutex);
+
+        if (i == MAX_CLIENTS) {
+            printf("Group full. Rejecting connection.\n");
+            close(new_socket);
+            continue;
+        }
+
+        pthread_t t_id;
+        int *new_sock_ptr = malloc(sizeof(int));
+        *new_sock_ptr = new_socket;
+        pthread_create(&t_id, NULL, handle_client, (void *)new_sock_ptr);
+        pthread_detach(t_id);
+    }
+
+    close(server_fd);
+    return 0;
+}
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define PORT 8080
+#define BUFFER_SIZE 2048
+
+void *receive_messages(void *arg) {
+    int socket_fd = *((int *)arg);
+    char buffer[BUFFER_SIZE];
+    int receive_size;
+
+    while ((receive_size = recv(socket_fd, buffer, sizeof(buffer) - 1, 0)) > 0) {
+        buffer[receive_size] = '\0';
+        printf("%s", buffer);
+    }
+    
+    printf("\nDisconnected from group server.\n");
+    exit(0);
+}
+
+int main() {
+    int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in server_addr;
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+
+    if (connect(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Connection to group failed");
+        return 1;
+    }
+
+    printf("Successfully joined the TCP group chat room!\n");
+
+    pthread_t recv_thread;
+    pthread_create(&recv_thread, NULL, receive_messages, &socket_fd);
+
+    char buffer[BUFFER_SIZE];
+    while (fgets(buffer, sizeof(buffer), stdin) != NULL) {
+        send(socket_fd, buffer, strlen(buffer), 0);
+    }
+
+    close(socket_fd);
+    return 0;
+}
+

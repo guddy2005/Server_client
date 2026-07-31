@@ -1,74 +1,113 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <sys/select.h>
 #include "protocal.h"
 
-typedef struct{
-  int socket;
-  char name[MAX_NAME];
-  int online;
+typedef struct MessageNode {
+    char sender[MAX_NAME];
+    char message[MAX_MSG];
+    struct MessageNode *next;
+} MessageNode;
+
+typedef struct {
+    char receiver_key[MAX_NAME];
+    MessageNode *head;
+} OfflineMapSlot;
+
+typedef struct {
+    int socket;
+    char name[MAX_NAME];
+    int online;
 } Client;
 
-Client client[MAX_CLIENTS];
+Client clients[MAX_CLIENTS];
+OfflineMapSlot offline_map[MAX_CLIENTS];
 
-void dump_offline_message(const char *src, const char *dest, const char *text) {
-    if (!src || !dest || !text) return;
-    FILE *f = fopen("offline_msg.dat", "ab");
-    if (!f) return;
-    
-    DiskMessage dm;
-    memset(&dm, 0, sizeof(DiskMessage));
-    strncpy(dm.sender, src, MAX_NAME - 1);
-    strncpy(dm.receiver, dest, MAX_NAME - 1);
-    strncpy(dm.message, text, MAX_MSG - 1);
-    if(fwrite(&dm, sizeof(DiskMessage), 1, f)!=1{
-       perror("[DISK STORAGE] Error writing to file");
-   }
-    fclose(f);
-    printf("[DISK STORAGE] Saved persistent offline log from %s to %s\n", src, dest);
+void map_store_offline_message(const char *src, const char *dest, const char *text) {
+    int i, empty_slot = -1;
+
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        if (strcmp(offline_map[i].receiver_key, dest) == 0) {
+            empty_slot = i;
+            break;
+        }
+        if (offline_map[i].receiver_key[0] == '\0' && empty_slot == -1) {
+            empty_slot = i;
+        }
+    }
+
+    if (empty_slot == -1) {
+        printf("[MAP ERROR] System storage map limits reached!\n");
+        return;
+    }
+
+    if (offline_map[empty_slot].receiver_key[0] == '\0') {
+        strncpy(offline_map[empty_slot].receiver_key, dest, MAX_NAME - 1);
+        offline_map[empty_slot].head = NULL;
+    }
+
+    MessageNode *new_node = (MessageNode *)malloc(sizeof(MessageNode));
+    if (!new_node) return;
+
+    strncpy(new_node->sender, src, MAX_NAME - 1);
+    strncpy(new_node->message, text, MAX_MSG - 1);
+    new_node->next = NULL;
+
+    if (offline_map[empty_slot].head == NULL) {
+        offline_map[empty_slot].head = new_node;
+    } else {
+        MessageNode *temp = offline_map[empty_slot].head;
+        while (temp->next != NULL) {
+            temp = temp->next;
+        }
+        temp->next = new_node;
+    }
+    printf("[MAP INSTANCE] Cached offline entry in RAM from %s ➔ %s\n", src, dest);
 }
 
-void flush_offline_messages(int sock, const char *username) {
-    FILE *f = fopen("offline_msg.dat", "rb");
-    if (!f) return;
+void map_flush_offline_messages(int sock, const char *username) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (strcmp(offline_map[i].receiver_key, username) == 0) {
+            MessageNode *current = offline_map[i].head;
 
-    DiskMessage vault[1000];
-    int keep_count = 0;
-    DiskMessage current;
+            while (current != NULL) {
+                Packet p;
+                memset(&p, 0, sizeof(Packet));
+                p.type = CMD_SEND_MSG;
+                strcpy(p.sender, current->sender);
+                strcpy(p.message, current->message);
+                send(sock, &p, sizeof(Packet), 0);
 
-    while(fread(&current, sizeof(DiskMessage), 1, f) == 1) {
-        if (strcmp(current.receiver, username) == 0) {
-            Packet p;
-            memset(&p, 0, sizeof(Packet));
-            p.type = CMD_SEND_MSG;
-            strcpy(p.sender, current.sender);
-            strcpy(p.message, current.message);
-            send(sock, &p, sizeof(Packet), 0);
-        } else {
-            if (keep_count < 1000) {
-                vault[keep_count++] = current;
+                MessageNode *to_free = current;
+                current = current->next;
+                free(to_free);
             }
-        }
-    }
-    fclose(f);
 
-    f = fopen("offline_msg.dat", "wb");
-    if (f) {
-        if (keep_count > 0) {
-            fwrite(vault, sizeof(DiskMessage), keep_count, f);
+            offline_map[i].head = NULL;
+            memset(offline_map[i].receiver_key, 0, MAX_NAME);
+            printf("[MAP DISPATCH] RAM cache cleared and flushed for user: %s\n", username);
+            break;
         }
-        fclose(f);
     }
 }
+
 void notify_peers(const char *username, PacketType type, int skip_socket) {
     Packet p;
     memset(&p, 0, sizeof(Packet));
     p.type = type;
     strcpy(p.sender, username);
-    
+
     for(int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].online && clients[i].socket != skip_socket) {
             send(clients[i].socket, &p, sizeof(Packet), 0);
         }
     }
 }
+
 void send_server_alert(int sock, const char *err_msg) {
     Packet p;
     memset(&p, 0, sizeof(Packet));
@@ -77,6 +116,7 @@ void send_server_alert(int sock, const char *err_msg) {
     strcpy(p.message, err_msg);
     send(sock, &p, sizeof(Packet), 0);
 }
+
 int main() {
     int server_fd, max_fd, activity, i;
     struct sockaddr_in saddr;
@@ -86,6 +126,9 @@ int main() {
         clients[i].socket = -1;
         clients[i].online = 0;
         memset(clients[i].name, 0, MAX_NAME);
+
+        memset(offline_map[i].receiver_key, 0, MAX_NAME);
+        offline_map[i].head = NULL;
     }
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -102,7 +145,7 @@ int main() {
     }
     listen(server_fd, 5);
 
-    printf("[Select Engine Active] Monitoring handles on port %d without threads...\n", PORT);
+    printf("[Active] Server Started on Port %d \n", PORT);
 
     fd_set readfds;
 
@@ -149,7 +192,7 @@ int main() {
 
                 if (bytes <= 0) {
                     if (clients[i].online) {
-                        printf("[Disconnected] User %s left the link pipeline.\n", clients[i].name);
+                        printf("[Disconnected] User %s Left\n", clients[i].name);
                         notify_peers(clients[i].name, NOTIFY_OFFLINE, current_sock);
                     }
                     close(current_sock);
@@ -173,9 +216,9 @@ int main() {
                         } else {
                             strncpy(clients[i].name, pkt.sender, MAX_NAME - 1);
                             clients[i].online = 1;
-                            printf("[Identity Verified] %s is now active.\n", clients[i].name);
+                            printf("[New Client] %s is now active.\n", clients[i].name);
                             notify_peers(clients[i].name, NOTIFY_ONLINE, current_sock);
-                            flush_offline_messages(current_sock, clients[i].name);
+                            map_flush_offline_messages(current_sock, clients[i].name);
                         }
                     } 
                     else if (pkt.type == CMD_SEND_MSG) {
@@ -186,14 +229,14 @@ int main() {
                                 if (clients[j].online) {
                                     send(clients[j].socket, &pkt, sizeof(Packet), 0);
                                 } else {
-                                    dump_offline_message(pkt.sender, pkt.receiver, pkt.message);
+                                    map_store_offline_message(pkt.sender, pkt.receiver, pkt.message);
                                 }
                                 break;
                             }
                         }
                         if (!dest_found) {
-                            dump_offline_message(pkt.sender, pkt.receiver, pkt.message); 
-                            send_server_alert(current_sock, "Target offline. Message cached safely.");
+                            map_store_offline_message(pkt.sender, pkt.receiver, pkt.message); 
+                            send_server_alert(current_sock, "Target user doesn't exist yet. Saved inside memory");
                         }
                     }
                 }
@@ -202,13 +245,4 @@ int main() {
     }
     return 0;
 }
-
-
-
-
-
-
-
-
-
 
