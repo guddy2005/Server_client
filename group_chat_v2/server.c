@@ -18,6 +18,7 @@ typedef struct
     int socket;
     char username[30];
     int online;
+    int visible;
 } Client;
 
 typedef struct
@@ -206,8 +207,66 @@ void notify_group(int group_id, const char *msg)
             send_to_client(clients[i].socket, msg);
         }
     }
-}
 
+}
+void show_group_status(int socket, int group_id)
+{
+    int group_index = find_group(group_id);
+
+    if (group_index < 0)
+    {
+        send_to_client(socket, "Group not found.\n");
+        return;
+    }
+
+    char response[4096];
+    char temp[128];
+
+    int online = 0;
+    int offline = 0;
+
+    response[0] = '\0';
+
+    sprintf(response,
+            "========== GROUP INFO ==========\n"
+            "Group : %s\n"
+            "Total Members : %d\n\n",
+            groups[group_index].group_name,
+            groups[group_index].member_count);
+
+    strcat(response, "ONLINE MEMBERS\n");
+
+    for (int i = 0; i < groups[group_index].member_count; i++)
+    {
+        int index = find_client_by_name(groups[group_index].members[i].username);
+
+        if (index >= 0)
+        {
+            sprintf(temp, "  %s\n", groups[group_index].members[i].username);
+            strcat(response, temp);
+            online++;
+        }
+    }
+
+  
+
+    strcat(response, "OFFLINE MEMBERS\n");
+
+    for (int i = 0; i < groups[group_index].member_count; i++)
+    {
+        int index = find_client_by_name(groups[group_index].members[i].username);
+
+        if (index < 0)
+        {
+            sprintf(temp, "  %s\n", groups[group_index].members[i].username);
+            strcat(response, temp);
+            offline++;
+        }
+    }
+
+    
+    send_to_client(socket, response);
+}
 char *next_token(char **cursor)
 {
     while (**cursor == ' ' || **cursor == '\t')
@@ -290,6 +349,8 @@ int main(void)
         close(server_socket);
         return 1;
     }
+ 
+ printf(" [INFO] Server started successfully. Waiting for connections...\n");
 
     while (1)
     {
@@ -344,10 +405,13 @@ int main(void)
             clients[client_index].socket = new_socket;
             snprintf(clients[client_index].username, sizeof(clients[client_index].username), "user%d", client_index + 1);
             clients[client_index].online = 1;
+           clients[client_index].visible = 1; 
+           printf("[INFO] Client connected successfully. Assigned username: %s (Socket: %d)\n", 
+            clients[client_index].username, new_socket);
             snprintf(response, sizeof(response), "Welcome %s!\n", clients[client_index].username);
-
+           
             send_to_client(new_socket, response);
-           send_to_client(new_socket,
+             send_to_client(new_socket,
 "\n"
 "==================== CHAT MENU ====================\n"
 "1. /groups                -> Show online users\n"
@@ -376,6 +440,7 @@ int main(void)
                     close(clients[i].socket);
                     clients[i].socket = -1;
                     clients[i].username[0] = '\0';
+                    clients[i].visible = 0;
                     clients[i].online = 0;
                     continue;
                 }
@@ -412,13 +477,43 @@ int main(void)
                                 strcpy(groups[group_index].members[0].username, clients[i].username);
                                 groups[group_index].member_count = 1;
                                 groups[group_index].active = 1;
+                                printf("[INFO group created]");
                                 snprintf(response, sizeof(response), "Group created with id %d\n", groups[group_index].id);
                                 send_to_client(clients[i].socket, response);
                                 break;
                             }
-                        }
+         
+               }
                     }
-                }
+                } 
+              else if (strcmp(command, "/offline") == 0)
+{
+    clients[i].visible = 0;
+    send_to_client(clients[i].socket,
+                   "You are now Offline.\n");
+} 
+else if (strcmp(command, "/online") == 0)
+{
+    clients[i].visible = 1;
+    send_to_client(clients[i].socket,
+                   "You are now Online.\n");
+}
+               else if (strcmp(command, "/status") == 0)
+{
+    char *group_token = next_token(&cursor);
+
+    int group_id = parse_int(group_token);
+
+    if (group_id < 0)
+    {
+        send_to_client(clients[i].socket,
+                       "Usage: /status <groupid>\n");
+    }
+    else
+    {
+        show_group_status(clients[i].socket, group_id);
+    }
+}
                 else if (strcmp(command, "/join") == 0)
                 {
                     char *group_token = next_token(&cursor);
@@ -432,14 +527,17 @@ int main(void)
                         group_index = find_group(group_id);
                         if (group_index < 0)
                         {
+                            printf("Group not found");
                             send_to_client(clients[i].socket, "Group not found.\n");
                         }
                         else if (is_member(group_id, clients[i].username))
                         {
+                           printf("you are already a member");
                             send_to_client(clients[i].socket, "You are already a member.\n");
                         }
                         else if (add_member(group_id, clients[i].username))
-                        {
+                         {
+                            printf("%s joined the group\n",clients[i].username);
                             snprintf(response, sizeof(response), "%s joined the group.\n", clients[i].username);
                             notify_group(group_id, response);
                             snprintf(response, sizeof(response), "You joined group %d.\n", group_id);
@@ -447,6 +545,7 @@ int main(void)
                         }
                         else
                         {
+                            
                             send_to_client(clients[i].socket, "Unable to join group.\n");
                         }
                     }
@@ -463,15 +562,18 @@ int main(void)
                     {
                         group_index = find_group(group_id);
                         if (group_index < 0)
-                        {
+                        {  
+                            printf("Group not found u cannot leave");
                             send_to_client(clients[i].socket, "Group not found.\n");
                         }
                         else if (!is_member(group_id, clients[i].username))
-                        {
+                        {  
+                            printf("You are not a member");
                             send_to_client(clients[i].socket, "You are not a member.\n");
                         }
                         else if (remove_member(group_id, clients[i].username))
                         {
+                            printf("%s left the group.\n", clients[i].username);
                             snprintf(response, sizeof(response), "%s left the group.\n", clients[i].username);
                             notify_group(group_id, response);
                             snprintf(response, sizeof(response), "You left group %d.\n", group_id);
@@ -479,6 +581,7 @@ int main(void)
                         }
                         else
                         {
+                            printf("unable to leave the group");
                             send_to_client(clients[i].socket, "Unable to leave group.\n");
                         }
                     }
@@ -500,6 +603,7 @@ int main(void)
                     }
                     if (count == 0)
                     {
+                        printf("No groups avilable with this id");
                         strcat(response, "No groups available.\n");
                     }
                     send_to_client(clients[i].socket, response);
