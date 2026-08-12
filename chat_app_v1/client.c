@@ -208,8 +208,8 @@ int main(int argc, char *argv[])
 
     printf("Connected to %s:%d\n", host, port);
     printf("Commands available:\n");
-    printf("/register <username>\n");
-    printf("/login <username>\n");
+    printf("/register <username><password>\n");
+    printf("/login <username><password>\n");
     printf("/online\n");
     printf("/offline\n");
     printf("/users\n");
@@ -217,6 +217,8 @@ int main(int argc, char *argv[])
     printf("/create_group <name>\n");
     printf("/groups\n");
     printf("/group_members <group>\n");
+    printf("ADD_CONTACT <user_id> \n");
+    printf("SHOW_CONTACTS\n");
     printf("/invite <group> <user>\n");
     printf("/accept <group>\n");
     printf("/reject <group>\n");
@@ -226,6 +228,7 @@ int main(int argc, char *argv[])
     printf("/rename_group <old> <new>\n");
     printf("/delete_group <group>\n");
     printf("/gmsg <group> <message>\n");
+    printf("/help\n");
     printf("/quit\n");
 
     pthread_t receiver;

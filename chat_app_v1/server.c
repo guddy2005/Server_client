@@ -10,6 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
+#include <ctype.h>
 
 #define DEFAULT_PORT 5000
 #define BACKLOG 10
@@ -23,8 +24,8 @@
 #define MAX_GROUP_DELIVERIES 5000
 #define MAX_INVITES 500
 #define DATA_DIR "data"
-
-typedef enum
+#define MAX_CONTACTS 100
+ enum
 {
     STATUS_SENT = 0,
     STATUS_DELIVERED = 1,
@@ -43,8 +44,11 @@ typedef struct
     int id;
     int socket;
     char username[MAX_USERNAME_LEN];
+    char password[128];  
     int connected;
     int online;
+    int contacts[MAX_CONTACTS];
+    int contact_count;
 } User;
 
 typedef struct
@@ -129,9 +133,51 @@ static void sanitize_text(char *dst, const char *src, size_t size)
             dst[i++] = *src;
         src++;
     }
-    dst[i] = '\0';
-}
+    dst[i] = '\0';}
+static User *find_user_by_id(int id);
+void add_contact(int current_user_id, int contact_user_id)
+{
+    User *current_user = find_user_by_id(current_user_id);
+    User *contact_user = find_user_by_id(contact_user_id);
 
+    if (current_user == NULL)
+    {
+        printf("Current user not found\n");
+        return;
+    }
+
+    if (contact_user == NULL)
+    {
+        printf("User to add not found\n");
+        return;
+    }
+
+    if (current_user_id == contact_user_id)
+    {
+        printf("You cannot add yourself\n");
+        return;
+    }
+
+    for (int i = 0; i < current_user->contact_count; i++)
+    {
+        if (current_user->contacts[i] == contact_user_id)
+        {
+            printf("User is already in contacts\n");
+            return;
+        }
+    }
+
+    if (current_user->contact_count >= MAX_CONTACTS)
+    {
+        printf("Contact list is full\n");
+        return;
+    }
+
+    current_user->contacts[current_user->contact_count] = contact_user_id;
+    current_user->contact_count++;
+
+    printf("%s added to contacts\n", contact_user->username);
+}
 static int send_all(int sockfd, const void *buffer, size_t length)
 {
     const char *data = buffer;
@@ -658,20 +704,89 @@ static void deliver_pending_messages(int user_id)
     deliver_pending_group_messages(user_id);
 }
 
-static int create_user(const char *username)
+
+
+void help_function(int sockfd)
+{
+    report_info(sockfd,
+        "Commands available:\n"
+        "/register <username> <password>\n"
+        "/login <username> <password>\n"
+        "/online\n"
+        "/offline\n"
+        "/users\n"
+        "/msg <user> <message>\n"
+        "/create_group <name>\n"
+        "/groups\n"
+        "/group_members <group>\n"
+        "/invite <group> <user>\n"
+        "/accept <group>\n"
+        "/reject <group>\n"
+        "/join_group <group>\n"
+        "/leave_group <group>\n"
+        "/kick <group> <user>\n"
+        "/rename_group <old> <new>\n"
+        "/delete_group <group>\n"
+        "/gmsg <group> <message>\n"
+        "/history\n"
+        "/help\n"
+        "/quit");
+}
+static int create_user(const char *username, const char *password)
 {
     if (user_count >= MAX_USERS)
         return -1;
+
     users[user_count].id = next_user_id++;
-    strncpy(users[user_count].username, username, sizeof(users[user_count].username) - 1);
-    users[user_count].username[sizeof(users[user_count].username) - 1] = '\0';
+
+    strncpy(users[user_count].username,
+            username,
+            sizeof(users[user_count].username) - 1);
+
+    users[user_count].username[
+        sizeof(users[user_count].username) - 1] = '\0';
+
+    strncpy(users[user_count].password,
+            password,
+            sizeof(users[user_count].password) - 1);
+
+    users[user_count].password[
+        sizeof(users[user_count].password) - 1] = '\0';
+
     users[user_count].connected = 0;
     users[user_count].online = 0;
-    user_count++;
-    save_users_locked();
-    return 0;
-}
+    users[user_count].socket = -1;
 
+    user_count++;
+
+    save_users_locked();
+
+    return 0;
+
+}
+static int validate_password(const char *password)
+{
+    if (!password || strlen(password) < 8)
+        return 0;
+
+    int upper = 0;
+    int lower = 0;
+    int digit = 0;
+
+    for (int i = 0; password[i] != '\0'; i++)
+    {
+        if (isupper((unsigned char)password[i]))
+            upper = 1;
+
+        if (islower((unsigned char)password[i]))
+            lower = 1;
+
+        if (isdigit((unsigned char)password[i]))
+            digit = 1;
+    }
+
+    return upper && lower && digit;
+}
 static int create_group(const char *name, int owner_id)
 {
     if (group_count >= MAX_GROUPS)
@@ -699,60 +814,100 @@ static void notify_group_members(Group *group, const char *message)
     }
 }
 
-static void handle_register(int sockfd, int *current_user_id, const char *username)
+static void handle_register(int sockfd,
+                            int *current_user_id,
+                            const char *username,
+                            const char *password)
 {
-    if (!username || username[0] == '\0')
+    if (!username || username[0] == '\0' ||
+        !password || password[0] == '\0')
     {
-        report_error(sockfd, "Usage: /register <username>");
+        report_error(sockfd,
+                     "Usage: /register <username> <password>");
         return;
     }
+
+    if (!validate_password(password))
+    {
+        report_error(sockfd,
+                     "Password must be at least 8 characters "
+                     "and contain uppercase, lowercase and digit.");
+        return;
+    }
+
     pthread_mutex_lock(&users_mutex);
-    if (find_user_by_name(username))
+
+    if (find_user_by_name(username)!= NULL)
     {
         pthread_mutex_unlock(&users_mutex);
         report_error(sockfd, "Username already exists.");
         return;
     }
-    if (create_user(username) < 0)
+
+    if (create_user(username, password) < 0)
     {
         pthread_mutex_unlock(&users_mutex);
         report_error(sockfd, "Unable to register new user.");
         return;
     }
+
     pthread_mutex_unlock(&users_mutex);
+
     report_info(sockfd, "Registration completed.");
 }
-
-static void handle_login(int sockfd, int *current_user_id, const char *username)
+static void handle_login(int sockfd,
+                         int *current_user_id,
+                         const char *username,
+                         const char *password)
 {
-    if (!username || username[0] == '\0')
+    if (!username || username[0] == '\0' ||
+        !password || password[0] == '\0')
     {
-        report_error(sockfd, "Usage: /login <username>");
+        report_error(sockfd,
+                     "Usage: /login <username> <password>");
         return;
     }
+
     pthread_mutex_lock(&users_mutex);
+
     User *user = find_user_by_name(username);
+
     if (!user)
     {
         pthread_mutex_unlock(&users_mutex);
         report_error(sockfd, "User not found.");
         return;
     }
+
+    /* Password check */
+    if (strcmp(user->password, password) != 0)
+    {
+        pthread_mutex_unlock(&users_mutex);
+        report_error(sockfd, "Invalid password.");
+        return;
+    }
+
     if (user->connected)
     {
         pthread_mutex_unlock(&users_mutex);
-        report_error(sockfd, "User already logged in from another session.");
+        report_error(sockfd,
+                     "User already logged in from another session.");
         return;
     }
+
     user->connected = 1;
     user->online = 1;
     user->socket = sockfd;
+
     *current_user_id = user->id;
+
     pthread_mutex_unlock(&users_mutex);
-    report_info(sockfd, "Login successful. Status set to ONLINE.");
+
+    report_info(sockfd,
+                "Login successful. Status set to ONLINE.");
+
     deliver_pending_messages(*current_user_id);
 }
-
 static void handle_status(int sockfd, int current_user_id, int online)
 {
     if (current_user_id <= 0)
@@ -1441,6 +1596,46 @@ static void logout_current_user(int current_user_id)
     }
     pthread_mutex_unlock(&users_mutex);
 }
+void show_contacts(int sockfd, int current_user_id)
+{
+    User *user = find_user_by_id(current_user_id);
+
+    if (user == NULL)
+    {
+        report_error(sockfd, "User not found.");
+        return;
+    }
+
+    if (user->contact_count == 0)
+    {
+        report_info(sockfd, "Your contact list is empty.");
+        return;
+    }
+
+    char response[4096];
+    response[0] = '\0';
+
+    for (int i = 0; i < user->contact_count; i++)
+    {
+        User *contact = find_user_by_id(user->contacts[i]);
+
+        if (contact != NULL)
+        {
+            char line[256];
+
+            snprintf(line, sizeof(line),
+                     "ID: %d | Username: %s | Status: %s\n",
+                     contact->id,
+                     contact->username,
+                     contact->online ? "ONLINE" : "OFFLINE");
+
+            strncat(response, line,
+                    sizeof(response) - strlen(response) - 1);
+        }
+    }
+
+    send(sockfd, response, strlen(response), 0);
+}
 
 static void handle_command(int sockfd, int *current_user_id, const char *message)
 {
@@ -1452,16 +1647,22 @@ static void handle_command(int sockfd, int *current_user_id, const char *message
     if (!command)
         return;
 
-    if (strcmp(command, "/register") == 0)
-    {
-        handle_register(sockfd, current_user_id, strtok_r(NULL, " ", &saveptr));
-        return;
-    }
-    if (strcmp(command, "/login") == 0)
-    {
-        handle_login(sockfd, current_user_id, strtok_r(NULL, " ", &saveptr));
-        return;
-    }
+    if (strncmp(command, "/register", 9) == 0)
+{
+    char *username = strtok_r(NULL, " ", &saveptr);
+    char *password = strtok_r(NULL, " ", &saveptr);
+
+    handle_register(sockfd, current_user_id, username, password);
+    return;
+}
+    if (strncmp(command, "/login", 6) == 0)
+{
+    char *username = strtok_r(NULL, " ", &saveptr);
+    char *password = strtok_r(NULL, " ", &saveptr);
+
+    handle_login(sockfd, current_user_id, username, password);
+    return;
+}
     if (strcmp(command, "/online") == 0)
     {
         handle_status(sockfd, *current_user_id, 1);
@@ -1499,6 +1700,25 @@ static void handle_command(int sockfd, int *current_user_id, const char *message
         handle_create_group(sockfd, *current_user_id, strtok_r(NULL, " ", &saveptr));
         return;
     }
+    if (strncmp(message, "ADD_CONTACT ", 12) == 0)
+{
+    int contact_id;
+
+    if (sscanf(message + 12, "%d", &contact_id) == 1)
+    {
+        add_contact(*current_user_id, contact_id);
+    }
+    else
+    {
+        printf("Usage: ADD_CONTACT <user_id>\n");
+    }
+
+    return;
+}if (strcmp(message, "SHOW_CONTACTS") == 0)
+{
+    show_contacts(sockfd, *current_user_id);
+    return;
+}
     if (strcmp(command, "/groups") == 0)
     {
         handle_groups(sockfd);
@@ -1562,6 +1782,11 @@ static void handle_command(int sockfd, int *current_user_id, const char *message
         handle_group_message(sockfd, *current_user_id, group_name, text);
         return;
     }
+    if (strcmp (command,"/help")==0)
+   {
+    help_function(sockfd);
+    return;     
+}
     if (strcmp(command, "/ackg") == 0)
     {
         handle_group_ack(sockfd, *current_user_id, strtok_r(NULL, " ", &saveptr));
