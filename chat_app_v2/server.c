@@ -120,20 +120,6 @@ static pthread_mutex_t groups_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t messages_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t invites_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static int ensure_data_directory(void)
-{
-    struct stat st;
-    if (stat(DATA_DIR, &st) == 0)
-    {
-        if (S_ISDIR(st.st_mode))
-            return 0;
-        return -1;
-    }
-    if (mkdir(DATA_DIR, 0755) < 0 && errno != EEXIST)
-        return -1;
-    return 0;
-}
-
 static MYSQL *mysql_conn = NULL;
 static const char *db_host = NULL;
 static const char *db_user = NULL;
@@ -222,7 +208,7 @@ static int mysql_init_schema(void)
     const char *queries[] = {
         "CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(50) UNIQUE NOT NULL, password VARCHAR(50) NOT NULL, online TINYINT(1) NOT NULL DEFAULT 0, last_active BIGINT DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS contacts (user_id INT NOT NULL, contact_id INT NOT NULL, PRIMARY KEY (user_id, contact_id))",
-        "CREATE TABLE IF NOT EXISTS groups (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(50) UNIQUE NOT NULL, owner_id INT NOT NULL, active TINYINT(1) NOT NULL DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS groups (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(50) NOT NULL, owner_id INT NOT NULL, active TINYINT(1) NOT NULL DEFAULT 1, UNIQUE (name, owner_id))",
         "CREATE TABLE IF NOT EXISTS group_members (group_id INT NOT NULL, user_id INT NOT NULL, PRIMARY KEY (group_id, user_id))",
         "CREATE TABLE IF NOT EXISTS messages (id BIGINT AUTO_INCREMENT PRIMARY KEY, sender_id INT NOT NULL, receiver_id INT NOT NULL, group_id INT NOT NULL, content VARCHAR(1024) NOT NULL, timestamp BIGINT NOT NULL, status TINYINT(1) NOT NULL)",
         "CREATE TABLE IF NOT EXISTS group_deliveries (message_id BIGINT NOT NULL, recipient_id INT NOT NULL, status TINYINT(1) NOT NULL, PRIMARY KEY (message_id, recipient_id))",
@@ -1728,6 +1714,7 @@ static void handle_ack(int sockfd, User *user, const char *message_id_text,
         {
             if (messages[i].status == STATUS_SENT)
                 messages[i].status = STATUS_DELIVERED;
+            db_update_message_status(message_id, STATUS_DELIVERED);
             pthread_mutex_unlock(&messages_mutex);
             pthread_mutex_lock(&users_mutex);
             User *sender = find_user_by_id(messages[i].sender_id);
@@ -1841,23 +1828,51 @@ static void handle_group_ack(int sockfd, User *user, const char *message_id_text
     }
     pthread_mutex_unlock(&messages_mutex);
 }
+static Group *find_group_by_name_and_owner(const char *name, int owner_id)
+{
+    for (int i = 0; i < group_count; i++)
+    {
+        if (groups[i].active &&
+            groups[i].owner_id == owner_id &&
+            strcmp(groups[i].name, name) == 0)
+        {
+            return &groups[i];
+        }
+    }
+    return NULL;
+}
+
 
 static int create_group(const char *name, int owner_id)
 {
     if (group_count >= MAX_GROUPS)
         return -1;
-    groups[group_count].id = next_group_id++;
-    strncpy(groups[group_count].name, name, sizeof(groups[group_count].name) - 1);
-    groups[group_count].name[sizeof(groups[group_count].name) - 1] = '\0';
-    groups[group_count].owner_id = owner_id;
-    groups[group_count].active = 1;
-    groups[group_count].member_count = 0;
-    groups[group_count].member_ids[groups[group_count].member_count++] = owner_id;
-    groups[group_count].admin_count = 0;
+
+    Group *group = &groups[group_count];
+
+    group->id = next_group_id++;
+    strncpy(group->name, name, sizeof(group->name) - 1);
+    group->name[sizeof(group->name) - 1] = '\0';
+    group->owner_id = owner_id;
+    group->active = 1;
+
+    group->member_count = 0;
+    group->member_ids[group->member_count++] = owner_id;
+
+    group->admin_count = 0;
+
+    /* Save group in MySQL */
+    if (db_insert_group(group) < 0)
+        return -1;
+
+    /* Save owner as first member */
+    if (db_insert_group_member(group->id, owner_id) < 0)
+        return -1;
+
     group_count++;
+
     return 0;
 }
-
 static void handle_create_group(int sockfd, User *user, const char *group_name,
                                 const struct sockaddr_in *addr, socklen_t addrlen)
 {
@@ -1872,7 +1887,7 @@ static void handle_create_group(int sockfd, User *user, const char *group_name,
         return;
     }
     pthread_mutex_lock(&groups_mutex);
-    if (find_group_by_name(group_name))
+    if (find_group_by_name_and_owner(group_name, user->id))
     {
         pthread_mutex_unlock(&groups_mutex);
         report_error(sockfd, "Group name already exists.", addr, addrlen);
@@ -2566,9 +2581,7 @@ int main(int argc, char *argv[])
     if (port <= 0 || port > 65535)
         port = DEFAULT_PORT;
 
-    if (ensure_data_directory() < 0)
-        fprintf(stderr, "Warning: could not create data directory.\n");
-
+    
     if (mysql_connect_db() < 0)
     {
         fprintf(stderr, "Database connection failed.\n");
