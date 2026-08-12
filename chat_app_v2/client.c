@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 #define DEFAULT_HOST "127.0.0.1"
-#define DEFAULT_PORT 5000
+#define DEFAULT_PORT 5001
 #define MAX_MESSAGE_LEN 1024
 
 static int send_message_udp(int sockfd, const char *message, const struct sockaddr_in *addr, socklen_t addrlen)

@@ -13,7 +13,7 @@
 #include <errno.h>
 #include <mysql/mysql.h>
 
-#define DEFAULT_PORT 5000
+#define DEFAULT_PORT 5001
 #define MAX_MESSAGE_LEN 1024
 #define MAX_USERNAME_LEN 50
 #define MAX_PASSWORD_LEN 50
@@ -2263,6 +2263,7 @@ static void handle_logout(int sockfd, User *user, const struct sockaddr_in *addr
     }
     pthread_mutex_lock(&users_mutex);
     user->online = 0;
+    user->addr_set = 0;
     pthread_mutex_unlock(&users_mutex);
     printf("SERVER LOG: User '%s' logged out from %s:%d\n", user->username, inet_ntoa(addr->sin_addr), ntohs(addr->sin_port));
     report_info(sockfd, "Logout successful. You are now offline.", addr, addrlen);
